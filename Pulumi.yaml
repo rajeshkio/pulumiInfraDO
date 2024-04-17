@@ -1,0 +1,7 @@
+name: pulumiDigitalocean
+runtime: go
+description: my k8s setup on digitalocean
+config:
+  pulumi:tags:
+    value:
+      pulumi:template: ""
