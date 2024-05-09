@@ -3,6 +3,7 @@ package checkRKE2Server
 import (
 	"os"
 
+	"github.com/pulumi/pulumi-command/sdk/go/command/local"
 	"github.com/pulumi/pulumi-command/sdk/go/command/remote"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 )
@@ -27,7 +28,7 @@ func createServerConnectionArgs(ip pulumi.StringOutput) (*remote.ConnectionArgs,
 		Host:           ip,
 		User:           pulumi.String("root"),
 		PrivateKey:     pulumi.String(privateKey),
-		DialErrorLimit: pulumi.Int(-1),
+		DialErrorLimit: pulumi.Int(300),
 	}
 	return connectionArgs, nil
 }
@@ -52,7 +53,7 @@ func CheckRKE2Server(ctx *pulumi.Context, ip pulumi.StringOutput) (pulumi.String
 		return pulumi.StringOutput{}, err
 	}
 	RKE2ServerStatus := cmd.Stdout.ApplyT(func(stdout interface{}) (string, error) {
-		return "RKE2 server is active", nil
+		return "Active", nil
 	}).(pulumi.StringOutput)
 	return RKE2ServerStatus, nil
 }
@@ -71,4 +72,27 @@ func GetRKE2NodeToken(ctx *pulumi.Context, ip pulumi.StringOutput) (pulumi.Strin
 	}
 
 	return nodeToken.Stdout, nil
+
+}
+
+func GetKubeConfig(ctx *pulumi.Context, ip pulumi.StringOutput) (pulumi.StringOutput, error) {
+	connectionArgs, err := createServerConnectionArgs(ip)
+	if err != nil {
+		return pulumi.StringOutput{}, err
+	}
+	privateKeyPath := "/Users/rajeshkumar/.ssh/id_ed25519"
+
+	return pulumi.All(ip).ApplyT(func(args []interface{}) (string, error) {
+		ip := args[0]
+		remoteKubeconfigPath := "/etc/rancher/rke2/rke2.yaml"
+		localKubeconfigPath := "./rke2.yaml"
+
+		_, err = local.NewCommand(ctx, "copyKubeconfig", &local.CommandArgs{
+			Create: pulumi.Sprintf("scp -o StrictHostKeyChecking=accept-new -i %s %s@%s:%s %s", privateKeyPath, connectionArgs.User, ip, remoteKubeconfigPath, localKubeconfigPath),
+		})
+		if err != nil {
+			return "", err
+		}
+		return localKubeconfigPath, nil
+	}).(pulumi.StringOutput), nil
 }

@@ -2,39 +2,38 @@ package createDODroplet
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/pulumi/pulumi-digitalocean/sdk/v4/go/digitalocean"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 )
 
-func CreateDODroplet(ctx *pulumi.Context, sshFingerprint, projectId, dropletName, userDataFilePath string, isMaster bool, masterIP, nodeToken pulumi.StringOutput) (*digitalocean.Droplet, error) {
-	userData, err := os.ReadFile(userDataFilePath)
-	//	var userDataWithToken pulumi.StringOutput
-	fmt.Println(nodeToken)
-	if err != nil {
-		return nil,
+func ModifyUserData(userData pulumi.String, isMaster bool, masterIP, nodeToken pulumi.StringOutput) pulumi.StringOutput {
 
-			fmt.Errorf("failed to read user data file: %w", err)
+	if isMaster {
+		return userData.ToStringOutput()
 	}
+	return pulumi.All(masterIP, nodeToken, userData).ApplyT(func(args []interface{}) (string, error) {
+		masterIP := args[0].(string)
+		nodeToken := args[1].(string)
+		userData := args[2].(string)
 
-	if !isMaster {
-		userDataWithMasterIP := masterIP.ApplyT(func(ip interface{}) (string, error) {
-			ipStr, ok := ip.(string)
-			if !ok {
-				return "", fmt.Errorf("IP address is not a string")
-			}
-			return strings.ReplaceAll(string(userData), "MASTER_IP", ipStr), nil
-		}).(pulumi.StringOutput)
+		userData = strings.ReplaceAll(userData, "MASTER_IP", masterIP)
+		userData = strings.ReplaceAll(userData, "NODE_TOKEN", nodeToken)
 
-		ctx.Export("userdatawithip", userDataWithMasterIP)
-	}
+		return userData, nil
+	}).(pulumi.StringOutput)
+
+}
+
+func CreateDODroplet(ctx *pulumi.Context, sshFingerprint, projectId, dropletName, image, region, size string, userData pulumi.StringOutput) (*digitalocean.Droplet, error) {
 
 	droplet, err := digitalocean.NewDroplet(ctx, dropletName, &digitalocean.DropletArgs{
-		Image:  pulumi.String("ubuntu-23-10-x64"),
-		Region: pulumi.String("blr1"),
-		Size:   pulumi.String("s-4vcpu-8gb"),
+		Name:   pulumi.String(dropletName),
+		Image:  pulumi.String(image),
+		Region: pulumi.String(region),
+		Size:   pulumi.String(size),
+
 		SshKeys: pulumi.StringArray{
 			pulumi.String(sshFingerprint),
 		},
@@ -42,10 +41,23 @@ func CreateDODroplet(ctx *pulumi.Context, sshFingerprint, projectId, dropletName
 			pulumi.String("rajesh-rancher-servers"),
 			pulumi.String("project:" + projectId),
 		},
-		UserData: pulumi.String(userData),
+		UserData: userData,
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create droplet: %v", err)
 	}
+
 	return droplet, nil
+}
+
+func CreateMasterNode(ctx *pulumi.Context, userData pulumi.StringOutput, sshFingerprint, projectId, image, dropletName, region, size string) (*digitalocean.Droplet, error) {
+	// You need to specify image, size, and region for master node
+
+	return CreateDODroplet(ctx, sshFingerprint, projectId, dropletName, image, region, size, userData)
+}
+
+func CreateWorkerNode(ctx *pulumi.Context, userData pulumi.StringOutput, sshFingerprint, projectId, image, dropletName, region, size string) (*digitalocean.Droplet, error) {
+	// You need to specify image, size, and region for worker node
+
+	return CreateDODroplet(ctx, sshFingerprint, projectId, dropletName, image, region, size, userData)
 }

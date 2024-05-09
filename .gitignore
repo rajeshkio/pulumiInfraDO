@@ -1,3 +1,5 @@
 /vendor/
 .digitalocean-token
 Pulumi.dev.yaml
+.githubToken
+rke2.yaml

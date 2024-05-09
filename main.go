@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"log"
+	"os"
 
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	"github.com/rajeshkio/pulumiDigitalocean/checkForDOProject"
@@ -17,8 +19,11 @@ func main() {
 		sshkeyName := "rajesh-keys"
 		RKE2MasterDroplet := "rajeshRancherMaster"
 		userMasterDataFilePath := "createDODroplet/installRKE2.sh"
-		RKE2AgentDroplet := "rajeshRancherAgent"
+		//	RKE2AgentDroplet := "rajeshRancherAgent"
 		userAgentDataFilePath := "createDODroplet/installRKE2Agent.sh"
+		image := "ubuntu-23-10-x64"
+		region := "blr1"
+		size := "s-4vcpu-8gb"
 
 		project, err := checkForDOProject.CheckForDOProject(ctx, projectName)
 		if err != nil {
@@ -32,41 +37,71 @@ func main() {
 			return err
 		}
 
-		masterDroplet, err := createDODroplet.CreateDODroplet(ctx, sshKey.Fingerprint, project.Id, RKE2MasterDroplet, userMasterDataFilePath, true, pulumi.StringOutput{}, pulumi.StringOutput{})
+		masterUserDataBytes, err := os.ReadFile(userMasterDataFilePath)
 		if err != nil {
-			log.Printf("Error: Failed to create master droplet: %v\n", err)
+			return fmt.Errorf("failed to read masterUserData file: %v", err)
+		}
+		masterUserDataStr := pulumi.String(string(masterUserDataBytes))
+		masterUserData := createDODroplet.ModifyUserData(masterUserDataStr, true, pulumi.StringOutput{}, pulumi.StringOutput{})
+		masterDroplet, err := createDODroplet.CreateDODroplet(ctx, sshKey.Fingerprint, project.Id, RKE2MasterDroplet, image, region, size, masterUserData)
+		if err != nil {
 			return err
 		}
-		ctx.Export("ssh server master", pulumi.Sprintf("ssh root@%s", masterDroplet.Ipv4Address))
-		var nodeToken pulumi.StringOutput
-		RKE2ServerStatus, err := checkRKE2Server.CheckRKE2Server(ctx, masterDroplet.Ipv4Address)
+
+		masterIP := masterDroplet.Ipv4Address
+		ctx.Export("MasterIP", masterIP)
+
+		RKE2ServerStatus, err := checkRKE2Server.CheckRKE2Server(ctx, masterIP)
 		if err != nil {
 			log.Printf("Error: Failed to start RKE2 server: %v\n", err)
 			return err
 		}
-		nodeToken = RKE2ServerStatus.ApplyT(func(status interface{}) (string, error) {
-			if status == "RKE2 server is active" {
-				token, err := checkRKE2Server.GetRKE2NodeToken(ctx, masterDroplet.Ipv4Address)
+		_ = pulumi.All(RKE2ServerStatus, masterIP).ApplyT(func(args []interface{}) error {
+			status := args[0].(string)
+			if status == "Active" {
+				token, err := checkRKE2Server.GetRKE2NodeToken(ctx, masterIP)
 				if err != nil {
-					return "", err
+					return err
 				}
-				return token.ToStringOutput().ElementType().String(), nil
+				workerUserDataBytes, err := os.ReadFile(userAgentDataFilePath)
+				if err != nil {
+					return nil
+				}
+				workerUserDataStr := pulumi.String(string(workerUserDataBytes))
+				workerCount := 1
+				workerUserData := createDODroplet.ModifyUserData(workerUserDataStr, false, masterIP, token)
+				for i := 0; i < workerCount; i++ {
+					workerDroplet, err := createDODroplet.CreateDODroplet(ctx, sshKey.Fingerprint, project.Id, fmt.Sprintf("rajeshRancherAgent%d", i), image, region, size, workerUserData)
+					if err != nil {
+						return err
+					}
+					ctx.Export("MasterIP", workerDroplet.Ipv4Address)
+				}
+				return nil
 			}
-			return "", nil
-		}).(pulumi.StringOutput)
-		ctx.Export("nodeToken", nodeToken)
+			return nil
+		})
 
-		ctx.Export("nodeToken", nodeToken)
-		masterIP := masterDroplet.Ipv4Address
+		kubeconfigOutput := RKE2ServerStatus.ApplyT(func(serverStatus interface{}) (pulumi.StringOutput, error) {
+			kubeconfig, err := checkRKE2Server.GetKubeConfig(ctx, masterIP)
+			if err != nil {
+				log.Printf("Error: Cannot get kubeconfig file: %v\n", err)
+				return pulumi.StringOutput{}, err
+			}
+			ctx.Export("kubeconfig: ", kubeconfig)
+			return kubeconfig, nil
+		})
+		kubeconfigOutput.ApplyT(func(kubeconfig interface{}) error {
+			kubeconfigBytes, ok := kubeconfig.([]byte)
+			if !ok {
+				return fmt.Errorf("kubeconfig is not of type []byte")
+			}
 
-		agentDroplet, err := createDODroplet.CreateDODroplet(ctx, sshKey.Fingerprint, project.Id, RKE2AgentDroplet, userAgentDataFilePath, false, masterIP, nodeToken)
-		if err != nil {
-			log.Printf("Error: Failed to create agent droplet: %v\n", err)
-			return err
-		} else {
-			ctx.Export("ssh server agent", pulumi.Sprintf("ssh root@%s", agentDroplet.Ipv4Address))
-		}
-
+			// Convert `[]byte` to `string` for display purposes and further processing
+			kubeconfigStr := string(kubeconfigBytes)
+			fmt.Println("Kubeconfig content:", kubeconfigStr)
+			return nil
+		})
 		return nil
 	})
 }
